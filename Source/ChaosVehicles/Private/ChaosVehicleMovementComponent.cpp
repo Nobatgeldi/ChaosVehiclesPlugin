@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosVehicleMovementComponent.h"
+#include "BodySetupCore.h"
 #include "EngineGlobals.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
+#include "Engine/SkinnedAsset.h"
 #include "CanvasItem.h"
 #include "Engine/Canvas.h"
 #include "Components/StaticMeshComponent.h"
@@ -33,7 +35,6 @@
 #include "GameFramework/HUD.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 
-#include "PhysicsReplication.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
 #include "Chaos/Particle/ParticleUtilities.h"
 #include "Chaos/ParticleHandleFwd.h"
@@ -44,7 +45,7 @@
 #define LOCTEXT_NAMESPACE "UVehicleMovementComponent"
 
 #if VEHICLE_DEBUGGING_ENABLED
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION
 #endif
 
 DEFINE_LOG_CATEGORY(LogVehicle);
@@ -146,7 +147,7 @@ void UChaosVehicleSimulation::TickVehicle(UWorld* WorldIn, float DeltaTime, cons
 	if (World && RigidHandle)
 	{
 #if DEBUG_NETWORK_PHYSICS
-		if (WorldIn->IsNetMode(NM_ListenServer))
+		if (WorldIn->IsNetMode(NM_ListenServer) || WorldIn->IsNetMode(NM_DedicatedServer))
 		{
 			UE_LOG(LogTemp, Log, TEXT("SERVER | PT | TickVehicle | Async tick vehicle with inputs at frame %d : Throttle = %f Brake = %f Roll = %f Pitch = %f Yaw = %f Steering = %f Handbrake = %f Sleeping = %d"),
 				InputData.PhysicsInputs.NetworkInputs.LocalFrame, VehicleInputs.ThrottleInput, VehicleInputs.BrakeInput, VehicleInputs.RollInput, VehicleInputs.PitchInput,
@@ -366,7 +367,7 @@ void UChaosVehicleSimulation::ApplyThrustForces(float DeltaTime)
 
 		Thruster.Simulate(DeltaTime);
 		FVector ThrustWorldLocation = VehicleState.VehicleWorldTransform.TransformPosition(Thruster.GetThrustLocation() + COM_Offset);
-		FVector ThrustForce = VehicleState.VehicleWorldTransform.TransformPosition(Thruster.GetThrustForce());
+		FVector ThrustForce = VehicleState.VehicleWorldTransform.TransformVector(Thruster.GetThrustForce());
 
 		AddForceAtPosition(ThrustForce, ThrustWorldLocation);
 	}
@@ -772,7 +773,7 @@ void UChaosVehicleMovementComponent::OnCreatePhysicsState()
 			{
 				if(NetworkPhysicsComponent)
 				{
-					NetworkPhysicsComponent->CreateDatasHistory<FPhysicsVehicleTraits>(this);
+					NetworkPhysicsComponent->CreateDataHistory<FPhysicsVehicleTraits>(this);
 				}
 			}
 		}
@@ -780,8 +781,9 @@ void UChaosVehicleMovementComponent::OnCreatePhysicsState()
 
 	FBodyInstance* BodyInstance = nullptr;
 	if (USkeletalMeshComponent* SkeletalMesh = GetSkeletalMesh())
-	{
-		SkeletalMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered;
+	{	
+		// this line was causing the server wheel positions to not be updated - this is already a user property so don't override it here and leave it to user to select the right option for their scenario
+		//SkeletalMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered;
 		BodyInstance = &SkeletalMesh->BodyInstance;
 	}
 }
@@ -803,7 +805,7 @@ void UChaosVehicleMovementComponent::OnDestroyPhysicsState()
 	}
 	if (bUsingNetworkPhysicsPrediction && NetworkPhysicsComponent)
 	{
-		NetworkPhysicsComponent->RemoveDatasHistory();
+		NetworkPhysicsComponent->RemoveDataHistory();
 	}
 }
 
@@ -951,7 +953,7 @@ void UChaosVehicleMovementComponent::SetTargetGear(int32 GearNum, bool bImmediat
 
 		if (TargetInstance)
 		{
-			FPhysicsCommand::ExecuteWrite(TargetInstance->ActorHandle, [&](const FPhysicsActorHandle& Chassis)
+			FPhysicsCommand::ExecuteWrite(TargetInstance->GetPhysicsActor(), [&](const FPhysicsActorHandle& Chassis)
 				{
 					if (VehicleSimulationPT && VehicleSimulationPT->PVehicle && VehicleSimulationPT->PVehicle->HasTransmission())
 					{
@@ -1055,7 +1057,9 @@ void UChaosVehicleMovementComponent::CalcThrottleBrakeInput(float& ThrottleOut, 
 			// if player isn't pressing forward or backwards...
 			if (VehicleState.ForwardSpeed < StopThreshold && VehicleState.ForwardSpeed > -StopThreshold)	//auto brake 
 			{
-				BrakeOut = 1.f;
+				// this code is causing the sleep state to toggle back off when the vehicle is stationary. It doesn't appear to be required anymore since the vehicle
+				// has another mechainsim to prevent it rolling on hills, which I believe was the initial intention of the code.
+				//BrakeOut = 1.f;
 			}
 			else
 			{
@@ -1285,7 +1289,7 @@ void UChaosVehicleMovementComponent::ProcessSleeping(const FControlInputs& Contr
 		PrevReplicatedSteeringInput = ReplicatedState.SteeringInput;
 
 		// Wake if control input pressed
-		if ((VehicleState.bSleeping && bControlInputPressed) || GVehicleDebugParams.DisableVehicleSleep)
+		if (bControlInputPressed || GVehicleDebugParams.DisableVehicleSleep)
 		{
 			VehicleState.bSleeping = false;
 			VehicleState.SleepCounter = 0;
@@ -1366,7 +1370,7 @@ AController* UChaosVehicleMovementComponent::GetController() const
 	{
 		if (APawn* Pawn = Cast<APawn>(UpdatedComponent->GetOwner()))
 		{
-			return Pawn->Controller;
+			return Pawn->GetController();
 		}
 	}
 
@@ -1500,9 +1504,9 @@ void UChaosVehicleMovementComponent::SetupVehicleMass()
 
 void UChaosVehicleMovementComponent::UpdateMassProperties(FBodyInstance* BodyInstance)
 {
-	if (BodyInstance && FPhysicsInterface::IsValid(BodyInstance->ActorHandle) && FPhysicsInterface::IsRigidBody(BodyInstance->ActorHandle))
+	if (BodyInstance && FPhysicsInterface::IsValid(BodyInstance->GetPhysicsActor()) && FPhysicsInterface::IsRigidBody(BodyInstance->GetPhysicsActor()))
 	{
-		FPhysicsCommand::ExecuteWrite(BodyInstance->ActorHandle, [&](FPhysicsActorHandle& Actor)
+		FPhysicsCommand::ExecuteWrite(BodyInstance->GetPhysicsActor(), [&](const FPhysicsActorHandle& Actor)
 			{
 				const float MassRatio = this->Mass > 0.0f ? this->Mass / BodyInstance->GetBodyMass() : 1.0f;
 
@@ -1751,7 +1755,7 @@ void UChaosVehicleMovementComponent::Update(float DeltaTime)
 	{
 		if (const FBodyInstance* BodyInstance = GetBodyInstance())
 		{
-			if (auto Handle = BodyInstance->ActorHandle)
+			if (auto Handle = BodyInstance->GetPhysicsActor())
 			{
 				CurAsyncInput->Proxy = Handle;	// vehicles are never static
 				FChaosVehicleAsyncInput* AsyncInput = static_cast<FChaosVehicleAsyncInput*>(CurAsyncInput);
@@ -1959,7 +1963,7 @@ void UChaosVehicleMovementComponent::PutAllEnabledRigidBodiesToSleep()
 
 
 #if VEHICLE_DEBUGGING_ENABLED
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION
 #endif
 
 

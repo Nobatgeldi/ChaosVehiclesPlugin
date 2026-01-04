@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNode_StageCoachWheelController.h"
+#include "Animation/AnimTrace.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimStats.h"
 #include "WheeledVehiclePawn.h"
