@@ -69,8 +69,6 @@ enum class EVehicleDifferential : uint8
 	RearWheelDrive,
 };
 
-
-
 /**
  * Structure containing information about the status of a single wheel of the vehicle.
  */
@@ -559,7 +557,20 @@ struct CHAOSVEHICLES_API FWheelState
 	TArray<FHitResult> TraceResult;
 };
 
-//////////////////////////////////////////////////////////////////////////
+/**
+ * UChaosWheeledVehicleSimulation handles the physics and behavior modeling for wheeled vehicles
+ * within the Chaos physics framework. This class is responsible for simulating the dynamic behavior
+ * of vehicles with multiple wheels under various driving conditions.
+ *
+ * Key features of the simulation include suspension modeling, wheel-ground interaction,
+ * transmission behavior, engine performance, and differential adjustments.
+ * The class provides a framework for accurate and customizable vehicle simulation, enabling
+ * developers to build complex vehicles with realistic driving characteristics.
+ *
+ * This simulation system integrates with the broader Chaos physics system to ensure accurate
+ * collision detection and response, as well as interaction with other physical objects in the
+ * environment.
+ */
 
 class CHAOSVEHICLES_API UChaosWheeledVehicleSimulation : public UChaosVehicleSimulation
 {
